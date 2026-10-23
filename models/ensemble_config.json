@@ -1,0 +1,61 @@
+{
+  "models": [
+    "CNN + Transformer",
+    "EEGNet",
+    "PSD + XGBoost"
+  ],
+  "weights": {
+    "cnn_transformer": 0.375,
+    "eegnet": 0.425,
+    "xgboost": 0.20
+  },
+  "threshold": 0.59,
+  "target_fs": 128.0,
+  "window_seconds": 10,
+  "overlap": 0.5,
+  "bandpass": [
+    1.0,
+    45.0
+  ],
+  "notch_hz": 50.0,
+  "required_channels": [
+    "Fp1",
+    "Fp2",
+    "F7",
+    "F3",
+    "Fz",
+    "F4",
+    "F8",
+    "T3",
+    "C3",
+    "Cz",
+    "C4",
+    "T4",
+    "T5",
+    "P3",
+    "Pz",
+    "P4",
+    "T6",
+    "O1",
+    "O2"
+  ],
+  "required_channel_count": 19,
+  "class_names": {
+    "0": "Control",
+    "1": "ADHD"
+  },
+  "missing_channel_policy": "REJECT",
+  "unknown_channel_order_policy": "REJECT",
+  "extra_channel_policy": "EXTRACT_REQUIRED_19_AND_REORDER",
+  "supported_formats": [
+    ".mat",
+    ".gdf",
+    ".edf",
+    ".csv",
+    ".fif",
+    ".set",
+    ".zip"
+  ],
+  "unnamed_ieee_training_order_verified": true,
+  "research_prototype_not_clinical_diagnostic": true
+}
