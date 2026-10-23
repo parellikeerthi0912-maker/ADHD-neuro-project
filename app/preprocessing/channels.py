@@ -34,13 +34,15 @@ def clean_channel_name(name: Any) -> str:
 def build_alias_lookup() -> Dict[str, str]:
     """
     Build a conservative lookup table from normalized alias string
-    to canonical target model channel name (e.g. 'FP1' -> 'Fp1', 'T7' -> 'T3').
+    to canonical target model channel name with exact casing (e.g. 'FP1' -> 'Fp1', 'T7' -> 'T3').
     """
     lookup: Dict[str, str] = {}
-    for canonical_name, aliases in CHANNEL_ALIASES.items():
-        lookup[clean_channel_name(canonical_name)] = canonical_name
+    canonical_map = {clean_channel_name(c): c for c in MODEL_CHANNEL_NAMES}
+    for canonical_key, aliases in CHANNEL_ALIASES.items():
+        target = canonical_map.get(clean_channel_name(canonical_key), canonical_key)
+        lookup[clean_channel_name(canonical_key)] = target
         for alias in aliases:
-            lookup[clean_channel_name(alias)] = canonical_name
+            lookup[clean_channel_name(alias)] = target
     return lookup
 
 

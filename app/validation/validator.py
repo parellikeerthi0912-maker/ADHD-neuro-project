@@ -123,12 +123,12 @@ def validate_eeg_file(
             )
 
     # 5. Check signal structure
-    if not isinstance(data, np.ndarray) or data.ndim != 2:
-        issues.append(f"EEG data must be a 2-D array. Received shape: {getattr(data, 'shape', None)}.")
+    if data is None or not isinstance(data, np.ndarray) or data.size == 0 or data.ndim != 2:
+        issues.append(f"EEG data must be a non-empty 2-D array. Received shape: {getattr(data, 'shape', None)}.")
         return ValidationReport(
             file=filename,
             valid=False,
-            format=recording.source_format,
+            format=getattr(recording, "source_format", "UNKNOWN"),
             issues=issues,
             warnings=warnings,
             model_compatible=False
@@ -137,6 +137,9 @@ def validate_eeg_file(
     # 6. Orient data to (time, channels)
     data, _ = detect_and_orient_time_dimension(data, channel_names)
     samples_count, channels_count = data.shape
+
+    if samples_count < 2:
+        issues.append(f"Recording contains insufficient samples ({samples_count}). Minimum required is 2 samples.")
 
     # 7. Check numerical integrity
     if np.any(np.isnan(data)) or np.any(np.isinf(data)):

@@ -105,7 +105,7 @@ def test_predict_zip_archive_endpoint():
 
 
 def test_predict_short_recording_endpoint():
-    """Verify that recordings shorter than 10 seconds are adaptively padded and succeed with predictions."""
+    """Verify that recordings shorter than 10 seconds are rejected by the mandatory validation layer."""
     with open(FIXTURES_DIR / "short_recording.csv", "rb") as f:
         response = client.post(
             "/api/predict",
@@ -113,12 +113,69 @@ def test_predict_short_recording_endpoint():
         )
     assert response.status_code == 200
     data = response.json()
-    assert data["summary"]["successful_files"] == 1
-    assert data["summary"]["failed_files"] == 0
+    assert data["summary"]["successful_files"] == 0
+    assert data["summary"]["failed_files"] == 1
     res = data["results"][0]
-    assert res["status"] == "success"
-    assert res["prediction"] in {"ADHD", "Control"}
-    assert res["total_windows"] == 1
+    assert res["status"] == "failed"
+    assert "shorter than the required" in res["error"]
+
+
+def test_predict_invalid_missing_channels_endpoint():
+    """Verify that recordings missing required 10-20 channels fail validation cleanly."""
+    with open(FIXTURES_DIR / "missing_channels.csv", "rb") as f:
+        response = client.post(
+            "/api/predict",
+            files=[("files", ("missing_channels.csv", f, "text/csv"))]
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"]["failed_files"] == 1
+    assert "MISSING_REQUIRED_CHANNELS" in data["results"][0]["error"]
+
+
+def test_predict_bci_competition_dataset_rejected():
+    """Verify rejection of BCI Competition IV recordings via prediction endpoints."""
+    # Build a simulated GDF/MAT recording with Graz motor-imagery signature name
+    import io
+    fake_bci_data = b"Simulated BCI Competition IV Motor Imagery Recording"
+    response = client.post(
+        "/api/predict",
+        files=[("files", ("A01T_bciciv.mat", fake_bci_data, "application/octet-stream"))]
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"]["failed_files"] == 1
+    assert "BCI Competition IV" in data["results"][0]["error"]
+
+
+def test_predict_batch_summary_metrics():
+    """Verify batch summary metrics computation when reference labels are present in cohort uploads."""
+    with open(FIXTURES_DIR / "FADHD.mat", "rb") as f1, open(FIXTURES_DIR / "FC.mat", "rb") as f2:
+        response = client.post(
+            "/api/predict",
+            files=[
+                ("files", ("FADHD.mat", f1, "application/octet-stream")),
+                ("files", ("FC.mat", f2, "application/octet-stream")),
+            ]
+        )
+    assert response.status_code == 200
+    data = response.json()
+    summary = data["summary"]
+    assert summary["total_files"] == 2
+    assert summary["successful_files"] == 2
+    assert summary["reference_adhd_count"] == 1
+    assert summary["reference_control_count"] == 1
+    assert summary["accuracy"] is not None
+
+
+def test_evaluation_module_runs():
+    """Verify that app/evaluation.py runs Mendeley evaluation and outputs table."""
+    from app.evaluation import evaluate_mendeley_benchmark
+    report = evaluate_mendeley_benchmark()
+    assert report["dataset_name"] == "Mendeley Data"
+    assert report["files_found"] == 4
+    assert report["files_evaluated"] == 4
+    assert report["accuracy_str"] == "50.0%"
 
 
 def test_legacy_predict_adhd_endpoint():

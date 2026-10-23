@@ -21,11 +21,13 @@ from app.schemas.responses import (
 from app.utils.files import (
     copy_upload_with_limit,
     infer_folder_label,
+    infer_ground_truth_label,
     safe_upload_filename,
     validate_extension,
 )
 from app.utils.logging import log_pipeline_step
 from app.validation.compatibility import check_tensor_compatibility
+from app.validation.validator import validate_eeg_file
 
 router = APIRouter(tags=["Prediction"])
 
@@ -55,11 +57,30 @@ def predict_single_eeg_file(
     fallback_channel_names: Optional[List[str]] = None
 ) -> FilePredictionResult:
     """
-    Process one EEG file through the entire pipeline:
-    Parse -> Orient -> Resample -> Filter -> Normalize -> Window -> CNN-Transformer -> Aggregate
+    Process one EEG file through the mandatory validation layer and pipeline:
+    Validate -> Parse -> Orient -> Resample -> Filter -> Normalize -> Window -> Ensemble -> Aggregate
     """
+    folder_ctx = infer_folder_label(display_name)
+    ref_label = infer_ground_truth_label(display_name)
+
     try:
-        # 1. Universal Parse
+        # 1. Mandatory Input Validation
+        val_report = validate_eeg_file(
+            path,
+            sampling_rate_override=sampling_rate_override,
+            fallback_channel_names=fallback_channel_names
+        )
+        if not val_report.valid or not val_report.model_compatible:
+            err_msg = "; ".join(val_report.issues) if val_report.issues else "Validation failed."
+            return FilePredictionResult(
+                filename=display_name,
+                status="failed",
+                error=err_msg,
+                folder_context=folder_ctx,
+                reference_label=ref_label
+            )
+
+        # 2. Universal Parse
         recording = parse_eeg_file(
             path,
             sampling_rate_override=sampling_rate_override,
@@ -68,20 +89,19 @@ def predict_single_eeg_file(
         original_shape = list(recording.original_shape)
         orig_fs = recording.sampling_rate
 
-
-        # 2. Universal Preprocess
+        # 3. Universal Preprocess
         X, continuous_preprocessed, final_fs, channel_names, warnings = process_eeg_recording(recording)
 
-        # 3. Model compatibility check
+        # 4. Model compatibility check
         check_tensor_compatibility(X)
 
-        # 4. Neural Network Inference
+        # 5. Neural Network Ensemble Inference
         mean_prob, pred_class, window_probs, window_records, agg_metrics = run_inference(X)
 
         orig_sample_count = recording.original_shape[0] if (len(recording.original_shape) >= 1 and recording.original_shape[0] > 1) else len(recording.data)
         duration_sec = round(orig_sample_count / (orig_fs or final_fs), 2)
 
-        # 5. Build detailed result
+        # 6. Build detailed result
         details = FilePredictionDetails(
             source=recording.source_format,
             format=path.suffix.lower(),
@@ -106,7 +126,7 @@ def predict_single_eeg_file(
             threshold=agg_metrics.get("threshold"),
         )
 
-        folder_ctx = infer_folder_label(display_name)
+        is_corr = (pred_class == ref_label) if ref_label else None
 
         return FilePredictionResult(
             filename=display_name,
@@ -124,6 +144,8 @@ def predict_single_eeg_file(
             model_probabilities=agg_metrics.get("model_probabilities"),
             ensemble_weights=agg_metrics.get("ensemble_weights"),
             threshold=agg_metrics.get("threshold"),
+            reference_label=ref_label,
+            is_correct=is_corr
         )
 
     except Exception as exc:
@@ -131,7 +153,8 @@ def predict_single_eeg_file(
             filename=display_name,
             status="failed",
             error=str(exc),
-            folder_context=infer_folder_label(display_name)
+            folder_context=folder_ctx,
+            reference_label=ref_label
         )
 
 
@@ -140,19 +163,76 @@ def build_batch_response(
     batch_type: str,
     archive_name: Optional[str] = None
 ) -> BatchPredictionResponse:
-    """Aggregate individual file prediction results into a summary response."""
+    """Aggregate individual file prediction results into a summary response with metrics."""
     successful = [r for r in results if r.status == "success"]
     failed = [r for r in results if r.status == "failed"]
 
     adhd_count = sum(1 for r in successful if r.prediction == "ADHD")
     control_count = sum(1 for r in successful if r.prediction == "Control")
+    unclassified = sum(1 for r in results if r.prediction is None or r.status != "success")
+
+    ref_adhd = sum(1 for r in results if r.reference_label == "ADHD")
+    ref_control = sum(1 for r in results if r.reference_label == "Control")
+
+    has_gt = (ref_adhd + ref_control) > 0
+    ref_adhd_val = ref_adhd if has_gt else None
+    ref_ctrl_val = ref_control if has_gt else None
+
+    correct_cnt = sum(1 for r in successful if r.is_correct is True) if has_gt else None
+    incorrect_cnt = sum(1 for r in successful if r.is_correct is False) if has_gt else None
+
+    accuracy_val = None
+    precision_val = None
+    recall_val = None
+    f1_val = None
+    cm_dict = None
+
+    if has_gt and len(successful) > 0:
+        tp = sum(1 for r in successful if r.reference_label == "ADHD" and r.prediction == "ADHD")
+        fn = sum(1 for r in successful if r.reference_label == "ADHD" and r.prediction == "Control")
+        fp = sum(1 for r in successful if r.reference_label == "Control" and r.prediction == "ADHD")
+        tn = sum(1 for r in successful if r.reference_label == "Control" and r.prediction == "Control")
+
+        eval_total = tp + fn + fp + tn
+        if eval_total > 0:
+            accuracy_val = round((tp + tn) / eval_total, 4)
+
+        if (tp + fp) > 0:
+            precision_val = round(tp / (tp + fp), 4)
+        else:
+            precision_val = 0.0
+
+        if (tp + fn) > 0:
+            recall_val = round(tp / (tp + fn), 4)
+        else:
+            recall_val = 0.0
+
+        if (precision_val + recall_val) > 0:
+            f1_val = round(2 * precision_val * recall_val / (precision_val + recall_val), 4)
+        else:
+            f1_val = 0.0
+
+        cm_dict = {
+            "ADHD": {"ADHD": tp, "Control": fn},
+            "Control": {"ADHD": fp, "Control": tn}
+        }
 
     summary = BatchSummary(
         total_files=len(results),
         successful_files=len(successful),
         failed_files=len(failed),
         adhd_predictions=adhd_count,
-        control_predictions=control_count
+        control_predictions=control_count,
+        unclassified_files=unclassified,
+        reference_adhd_count=ref_adhd_val,
+        reference_control_count=ref_ctrl_val,
+        correct_predictions=correct_cnt,
+        incorrect_predictions=incorrect_cnt,
+        accuracy=accuracy_val,
+        precision=precision_val,
+        recall=recall_val,
+        f1_score=f1_val,
+        confusion_matrix=cm_dict
     )
 
     overall_status = "success" if len(successful) > 0 else "failed"
