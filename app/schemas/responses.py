@@ -91,6 +91,8 @@ class FilePredictionResult(BaseModel):
     model_probabilities: Optional[Dict[str, float]] = None
     ensemble_weights: Optional[Dict[str, float]] = None
     threshold: Optional[float] = None
+    reference_label: Optional[str] = None  # Verified ground-truth reference label if available ("ADHD" or "Control")
+    is_correct: Optional[bool] = None  # True if predicted label matches reference_label
 
 
 class BatchSummary(BaseModel):
@@ -99,6 +101,16 @@ class BatchSummary(BaseModel):
     failed_files: int
     adhd_predictions: int
     control_predictions: int
+    unclassified_files: Optional[int] = 0
+    reference_adhd_count: Optional[int] = None
+    reference_control_count: Optional[int] = None
+    correct_predictions: Optional[int] = None
+    incorrect_predictions: Optional[int] = None
+    accuracy: Optional[float] = None
+    precision: Optional[float] = None
+    recall: Optional[float] = None
+    f1_score: Optional[float] = None
+    confusion_matrix: Optional[Dict[str, Dict[str, int]]] = None
 
 
 class BatchPredictionResponse(BaseModel):

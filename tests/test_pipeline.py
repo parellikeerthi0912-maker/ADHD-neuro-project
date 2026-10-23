@@ -271,12 +271,12 @@ def test_full_pipeline_fc_mat_mendeley():
 # 4. NEGATIVE AND VALIDATION TESTS
 # ============================================================
 
-def test_short_recording_padded():
-    """Test that recordings shorter than 10 seconds are adaptively padded and generate valid windows."""
-    rec = parse_eeg_file(FIXTURES_DIR / "short_recording.csv")
-    X, continuous, fs, ch_names, warnings = process_eeg_recording(rec)
-    assert X.shape == (1, WINDOW_SAMPLES, REQUIRED_CHANNELS)
-    assert any("short" in w.lower() or "extended" in w.lower() for w in warnings)
+def test_short_recording_rejected_by_validation():
+    """Test that recordings shorter than 10 seconds are rejected by validation without silent padding."""
+    rep_short = validate_eeg_file(FIXTURES_DIR / "short_recording.csv")
+    assert rep_short.valid is False
+    assert rep_short.model_compatible is False
+    assert any("shorter than the required" in issue for issue in rep_short.issues)
 
 
 def test_empty_recording_rejected():
@@ -294,12 +294,47 @@ def test_empty_recording_rejected():
         process_eeg_recording(empty_rec)
 
 
-def test_missing_channels_padded():
-    """Test that recordings with fewer channels are zero-padded to 19 channels (matching Colab pad_channels)."""
+def test_missing_channels_rejected():
+    """Test that recordings missing required 10-20 channels are cleanly rejected."""
     rec = parse_eeg_file(FIXTURES_DIR / "missing_channels.csv")
-    X, continuous, fs, ch_names, warnings = process_eeg_recording(rec)
-    assert X.shape[2] == 19
-    assert any("zero-padded" in w.lower() for w in warnings)
+    with pytest.raises(ValueError, match="MISSING_REQUIRED_CHANNELS"):
+        process_eeg_recording(rec)
+
+
+def test_nan_inf_signal_rejected():
+    """Test that EEG recordings containing NaN or Inf values are cleanly rejected."""
+    data_nan = np.zeros((1280, 19), dtype=np.float64)
+    data_nan[10, 5] = np.nan
+    with pytest.raises(ValueError, match="INVALID_EEG_SIGNAL"):
+        map_and_reorder_channels(data_nan, MODEL_CHANNEL_NAMES)
+
+    data_inf = np.zeros((1280, 19), dtype=np.float64)
+    data_inf[20, 2] = np.inf
+    with pytest.raises(ValueError, match="INVALID_EEG_SIGNAL"):
+        map_and_reorder_channels(data_inf, MODEL_CHANNEL_NAMES)
+
+
+def test_flat_channel_rejected():
+    """Test that EEG signals with flat zero-variance channels are rejected."""
+    data_flat = np.random.randn(1280, 19)
+    data_flat[:, 3] = 0.0  # Zero variance flat line
+    with pytest.raises(ValueError, match="INVALID_EEG_SIGNAL"):
+        map_and_reorder_channels(data_flat, MODEL_CHANNEL_NAMES)
+
+
+def test_bci_competition_rejection():
+    """Test rejection of BCI Competition IV motor imagery dataset fixtures."""
+    from app.validation.bci_detector import inspect_for_bci_competition_dataset
+    # BCI IV-2a 22 EEG + 3 EOG montage layout
+    bci_chans = [f"EEG-{i}" for i in range(22)] + ["EOG-left", "EOG-intermediate", "EOG-right"]
+    res = inspect_for_bci_competition_dataset(
+        Path("A01T.gdf"),
+        channel_names=bci_chans,
+        annotations=["769", "770", "771", "772"],
+        sampling_rate=250.0
+    )
+    assert res is not None
+    assert "BCI Competition IV" in res
 
 
 def test_validation_report_on_valid_and_invalid():
